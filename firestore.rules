@@ -1,0 +1,97 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function userDocExists() {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function userRole() {
+      return userDocExists() ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role : null;
+    }
+
+    function approvedUser() {
+      return userDocExists() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isApproved == true;
+    }
+
+    function isOperator() {
+      return approvedUser() && (userRole() == 'operator' || userRole() == 'superadmin');
+    }
+
+    function isSuperAdmin() {
+      return approvedUser() && userRole() == 'superadmin';
+    }
+
+    function canAuthor() {
+      return approvedUser() && (userRole() == 'author' || userRole() == 'operator' || userRole() == 'superadmin');
+    }
+
+    function canBrowseProblemCatalog() {
+      return approvedUser() && (userRole() == 'author' || userRole() == 'operator' || userRole() == 'superadmin');
+    }
+
+    function authorAllowedStatus() {
+      return request.resource.data.status == 'draft'
+        || request.resource.data.status == 'submitted'
+        || request.resource.data.status == 'rejected';
+    }
+
+    match /users/{userId} {
+      allow get: if isSelf(userId) || isOperator();
+      allow list: if isOperator();
+      allow create: if isSelf(userId)
+        && request.resource.data.role == 'player'
+        && request.resource.data.isApproved == false;
+      allow update: if (isSelf(userId)
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.isApproved == resource.data.isApproved)
+        || isOperator();
+      allow delete: if isSuperAdmin();
+    }
+
+    match /problems/{problemId} {
+      allow get, list: if canBrowseProblemCatalog();
+      allow create: if canAuthor()
+        && request.resource.data.authorId == request.auth.uid
+        && request.resource.data.authorName is string
+        && (isOperator() || request.resource.data.status != 'approved');
+      allow update: if isOperator()
+        || (canAuthor()
+          && resource.data.authorId == request.auth.uid
+          && request.resource.data.authorId == resource.data.authorId
+          && request.resource.data.authorName == resource.data.authorName
+          && authorAllowedStatus());
+      allow delete: if isOperator();
+    }
+
+    match /gameState/{docId} {
+      allow read: if signedIn();
+      allow write: if isOperator();
+    }
+
+    match /gameTeams/{teamId} {
+      allow read: if signedIn();
+      allow write: if isOperator();
+    }
+
+    match /gameParticipants/{participantId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && participantId == request.auth.uid;
+      allow update: if signedIn() && (participantId == request.auth.uid || isOperator());
+      allow delete: if signedIn() && (participantId == request.auth.uid || isOperator());
+    }
+
+    match /gameSubmissions/{submissionId} {
+      allow read: if signedIn();
+      allow create: if signedIn();
+      allow update, delete: if isOperator();
+    }
+  }
+}
